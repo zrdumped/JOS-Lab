@@ -1,0 +1,35 @@
+6828 decimal is 015254 octal!
+pading space in the right to number 22: 22      .
+show me the sign: +1024, -1024
+entering test_backtrace 5
+entering test_backtrace 4
+entering test_backtrace 3
+entering test_backtrace 2
+entering test_backtrace 1
+entering test_backtrace 0
+Stack backtrace:
+  eip f010007b  ebp f010ff18  args 00000000 00000000 00000000 0000001a f0100a47
+	      kern/init.c:18: test_backtrace+59
+  eip f0100068  ebp f010ff38  args 00000000 00000001 f010ff78 0000001a f0100a47
+	      kern/init.c:16: test_backtrace+40
+  eip f0100068  ebp f010ff58  args 00000001 00000002 f010ff98 0000001a f0100a47
+	      kern/init.c:16: test_backtrace+40
+  eip f0100068  ebp f010ff78  args 00000002 00000003 f010ffb8 0000001a f0100a47
+	      kern/init.c:16: test_backtrace+40
+  eip f0100068  ebp f010ff98  args 00000003 00000004 00000000 0000001f 00000000
+	      kern/init.c:16: test_backtrace+40
+  eip f0100068  ebp f010ffb8  args 00000004 00000005 00000000 00010094 00010094
+	      kern/init.c:16: test_backtrace+40
+  eip f01000fa  ebp f010ffd8  args 00000005 00000400 fffffc00 00000000 00000000
+	      kern/init.c:44: i386_init+102
+  eip f010003e  ebp f010fff8  args 00111021 00000000 00000000 00000000 00000000
+	      kern/entry.S:82: <unknown>+0
+leaving test_backtrace 0
+leaving test_backtrace 1
+leaving test_backtrace 2
+leaving test_backtrace 3
+leaving test_backtrace 4
+leaving test_backtrace 5
+Welcome to the JOS kernel monitor!
+Type 'help' for a list of commands.
+K> 
