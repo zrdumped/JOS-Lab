@@ -1,0 +1,97 @@
+﻿Lab2 Memory Management
+
+Part 1: Physical Page Management
+Exercise 1
+
+Boot_alloc
+    n大于0时，allocate相应大小（4K对齐后）的空间，并利用kaddr、paddr两个函数进行输入检查，返回kva。n等于0时，返回下一页的地址，而不allocate任何空间。N小于0时，返回null。
+
+Mem_init
+    申请n个Page大小的空间，并初始化为0。
+
+Page_init
+    Physical page 0, IO hole标记为1（意思是永远有一个进程在引用该页），即永远不能被free和allocated。剩余的base memory和extented memory标记为0，且加入free list准备被allocate。此外，已经被allocated的页，例如pages数组所占的页，应当也被标记为allocated。
+
+Alloc_page
+    如果没有空页则返回null，如果flag要求清零，则将新allocate的页用memset设为全零，然后将free list的第一页返回，free list指向下一个空页。
+
+
+Part 2: Virtual Memory
+Question1
+    此处应该为uintptr_t，因为对于程序而言只可见虚拟地址
+
+Exercise 4
+Pgdir_walk
+    用拿到的va的PDX段索引相应的页，若不存在且创建，则allocate一个新的页，修改相应参数，将该页的物理地址记录在PDE中。
+    然后根据va的PTX段在PDE指向的页中找到对应的PTE，将其指针从物理地址（即记录的值除去标记位）转换为内核虚拟地址返回。
+
+Boot_map_region
+    遍历size覆盖的页的数目，用区间内的va找到对应的PTE，将对应的物理地址写入。
+
+Page_lookup
+    使用va获得对应的pte，将它指向的物理地址（记录的地址用pa2page删掉后面的标记位）转换为页返回。
+    根据注释，如果pte_store不为0，还需要将该pte记录在store中。即该函数返回值为需要的页，pte中保存了对应的pte。
+
+Page_remove
+    调用lookup找到对应的页，将对应的page的ref减一，如果为零则free（在函数page_decref中）。将对应的tlb禁用。将对应的pte置为0.
+
+Page_insert
+    用目标va知道到对应的pte（pgdir_walk)，如果不存在则返回错误。然后将page的ref加一，如果va对应的pte已经存在，就将它对应的page remove，然后将新的page保存其中。
+
+
+Exercise 5
+    使用boot_map_region将Upages之上的虚拟地址与对应的物理地址映射。
+
+Question2
+    Entry --- Base VA --- Points to
+    1023  ---  4G - 4M =  0xffc00000  --- Page table for top 4MB of phys memory
+    960 ~ 1022 --- 0xfxx00000 -- Page table for phys memory above kernbase
+    958 --- 0xefbf8000 --- kernal stack
+    957 --- 0xef800000 --- Cur. page table
+    956 --- 0xef000000 --- R0 Pages
+
+Question3
+    pde和pte中存在权限位，地址翻译的时候MMU会进行检查，当前mode是否用对应的访问权限。
+
+Question4
+    最大可支持4MB UPAGES，最多可以有4MB / sizeof(struct Page) * 4K = 2G 物理空间， 由Virtual Memory Map的设计决定。
+
+Question5
+    2G 物理内存
+    = 2G / 4K  = 512K 个PTE （页）
+    = 512K / （PGSIZE / sizeof(pte_t)) = 512 个pte page
+    < 1 个 PDE
+
+    共需要512K个 struct page保存page信息，占用512K * 8B = 4M
+    共需要512页保存pte，占用512 * 4K = 2M，
+    需要一页保存PDE，占用4K。
+
+
+Question6
+    在执行如下汇编，jmp的时候修改了eip
+
+    mov	$relocated, %eax
+    jmp	*%eax
+
+    在low eip可以继续执行是因为，entry_pgdir也被映射到了0~4M的虚拟空间，仍然可以正常访问。
+    修改eip必要的原因是，之后加载了kern_pgdir，而entry_pgdir不会再被使用。代码使用的都是高处的虚拟地址，如果使用非常低的地址用来翻译成物理地址的话，会找不到对应的物理地址。
+
+
+Exercise6
+    首先类比boot_map_region()，实现boot_map_region_large()，用va中记录的pdx在pgdir中查找，然后修改权限为，除了增加PTE_P之外，还标记了PTE_PS，意为大页。
+    然后在mem_init中增加打开CR4_PSE的代码，且必须在从最小的enter page directory切换到full kern_pgdir之前。
+
+Challenge1
+    在项目的git树中发现了代码框架和构造函数，在此基础上进行了修改。
+    使用了MAXORDER（表示最大的order数）和 MAXCHUNKNUM（表示最大的chunk的数目）两个宏。一共有 MAXORDER + 1 数目的chunk_list，每个list中包含了大小为 1 << order 数目的页的chunk。
+    chunk_init()构造chunk_list，将 （1 << MAXORDER） * MAXCHUNKNUM 数目的页全部分配给最大的chunk_list，其余list设置为空。其中，每个chunk第一个page指向下一个chunk，其余page使用物理地址访问，其pp_link设置为NULL。此外，在page_init()中，构造extended memory时，要将对应数目的页空出来。
+    chunk_alloc()分配指定order的chunk。首先在对应order的链表中查找，如果不存在则向储存更大chunk的链表查找。直到超出MAXORDER，如果仍没有找到，说明空间不足，返回NULL。如果找到了，且大小大于需要的order，首先将对应的chunk_list指向下一项。然后递归的将当前项一分为二，后一半加入order - 1 对应的chunk_list，前一半继续判断，直到符合需要的order。返回该chunk。
+    chunk_list()将指定order的chunk（pp）释放空间。首先将该chunk添加到指定order对应的chunk_list之首。然后从下一项（tmp）开始遍历chunk_list，并且记录当前chunk的前一个（pre_tmp)。如果发现与pp相邻的chunk，则将二者合并。方法是，将pre_tmp，与tmp后一项连接起来，即从链表中删除tmp。之后将chunk_list指向其中的下一项，即删除pp。然后将pp和tmp中位置较后的一个chunk的pp_link设置为NULL，将tmp指向位置较前的一项，将chunk_list[order+1]指向tmp，即将chunk加入较大的chunk_list中。然后order + 1继续递归，查找可能合并的空间。
+    最终的代码通过了check_chunk的相关检查。
+
+Challenge2
+    在monitor中实现了如下函数：
+    shmap（showmapping）将输入范围内的虚拟地址翻译为物理地址，并把对应页的标记位显示出来。用户输入起始地址和终止地址（均为虚拟地址），通过pgdir_walk得到的pte翻译为物理地址，然后一次检测各个PTE标记位，进行相应的输出。
+    chmap（changemapping）将输入的虚拟地址对应的页的权限为进行修改。如果输入为'+'，则增加新的权限，但是PS位不允许修改。如果输入为'-'，则删除相应权限。用户可以将多个权限位合并输入。例如，输入"+ADPWT"，则增加PTE_A，PTE_D，PTE_PWT三个权限位。
+    memdump将指定的物理地址或虚拟地址范围内的内容进行输出。输入-p表示物理地址，输入-v表示虚拟地址。遍历指定范围内所有的地址，如果是虚拟地址则直接访问其值，作为char输出。如果是物理地址，则+kernbase转换为虚拟地址，然后进行访存。
+    
