@@ -1,0 +1,12 @@
+﻿Question1
+每个exception/interrupt的处理方式都是不同的。有的会产生error code，而有的不会，他们的trapframe是不同的。因此trapframe会很难控制。此外，有的中断处理结束后会返回用户进程，而有的会直接停止用户进程。但是我认为，以上的问题都可以通过一个handler内部不同的分支判断解决。
+
+Question2
+Softint在用户态下产生了page fault的中断。由于page fault的特权级是0，当前状态不具有权限，因此不会触发相应的page fault的handler。而是产生了general potection fault（13）。如果用户态可以调用系统级的函数，则整个系统会变得非常不安全，危险的用户代码可以更轻易地进行buffer overflow攻击，访问与修改系统内部代码与数据。
+
+Question3
+该测试正确情况下会由用户产生T_BRKPT，然后执行相应的处理函数。这是因为在设置IDT的时候，将该trap的权限设置为了3。如果错误地设置为0，那么当用户需要设置断点的时候，就不会触发T_BRKPT，因为用户不具有权限，而会触发T_GPFLT了。
+
+Question4
+以上的机制防止用户恶意地产生trap，但是breakpoint本身为程序员提供了便利，且只涉及暂停、读内存等有限的功能，因此是安全的，可以允许用户触发。
+而softint触发了page fault。如果用户拥有权限触发page fault的话，会干扰kernel对于内存的管理，是有害的。因此通过权限设置，禁止了用户的这种行为。
