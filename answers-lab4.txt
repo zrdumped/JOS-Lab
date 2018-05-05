@@ -1,0 +1,95 @@
+﻿Question1
+1.mpentry.S中不需要打开A20。
+2.使用MPBOOTPHYS计算symbol的绝对地址，而不是依靠linker填充。因为在启动AP的时候，bootstrap processor已经使用了protected mode，但是AP还没有启动，在real mode下，不能使用页表，因此必须手动将虚拟地址翻译为物理地址。
+
+Question2
+因为当有CPU工作在内核态时，其他的CPU接收到中断后，仍然会由硬件把一些参数push到内核栈上。如果所有CPU共用同一个栈，则会覆盖掉正在被使用的数据。
+
+Question3
+e变量是保存在内核栈上的，用户的页表和内核的页表在内核区域映射是一致的，因此虽然切换cr3修改了用户态的页表，内核部分的页表仍然是相同的，因此切换前后不会有影响。
+
+Exercise1
+修改page_init()，使保存APs的entry code的MPENTRY_PADDR所在的页不会被加入到free_list中。具体的方法是在base memory中，判断是该页，则ref设置为1，link设置为NULL，其余页与原来一样。
+
+Exercise2
+为每一个CPU分配内核栈。每个栈大小为（KSTKSIZE + KSTKGAP），KSTKSIZE需要映射物理地址（boot_map_region），KSTKGAP不需要，作为guard page在内核溢出的时候起保护作用。
+
+Exercise3
+由于从单核变成了多核，因此原来的全局变量ts不能使用了。因此在trap_init_prcpu()中，要把全局变量ts改成针对每个CPU的thiscpu->cpu_ts，他的esp指向exe2中为每个CPU设置的内核栈顶。tss descriptor改成gdt[(GD_TSS0 >> 3) + i]，TSS selector改成GD_TSS0 + (i << 3)。
+
+Exercise4
+为每个CPU添加 big kernel lock。
+在i386_init()中，在启动其他CPU之前申请锁。
+在mp_main()中，在创建AP后申请锁，之后调用sched_yield()在该AP上运行env。
+在trap()中，当CPU从用户态进入内核态的时候，申请锁。
+在run_env()中，在返回用户态之前释放锁。
+
+Exercise4.1
+为系统加上ticket spinlock。
+在holding中，判断owner和next的ticket是否相同，如果相同则锁空闲，否则判断当前的cpu是否是锁对应的cpu。
+在初始化中，将owner和next的ticket都设置为0.
+在申请锁的时候，读取next的ticket并且原子加一。如果相等则获得锁，否则spin。
+在释放锁的时候，要把owner的ticket加一。
+Spinlock很慢的可能原因是，虽然避免了straving，但他实际上还是全局锁，而且每次spin的过程都加入了原子的加操作，因此会比原来更慢。
+
+Exercise5
+实现sched_yield()中的RR scheduling。
+首先在syscall中加入SYS_yield，对yield调用相应的函数。
+然后修改env_init函数，将前NCPU个env的type设置为idle，表示是预留出的idle进程，同时不把他们加入env_free_list。然后[NCPU, NENV - 1]按照原来的方式初始化，并将它们的type标记位user，表示是用于工作的普通进程。
+在sched_yield()中，每次从当前env的下一个开始循环遍历[NCPU, NENV - 1]这些env，如果发现runnable的进程，则run_env。如果没有发现，如果当前进程仍然处于RUNNING的状态，也可以继续运行该进程。如果出了idle进程之外没有runnable的进程，就drop into kernel monitor。
+之后，按照exe4，sysenter handler进入的syscall是没有加锁的，需要将syscall函数加锁。但是yield因为会返回到用户态并放锁，而且他syscall不会，因此要暂存返回值，syscall在放锁之后才能返回。
+最后，由于没有把旧的env的寄存器状态保存，在trapentry.S中修改sysenter_handler，push一个trapframe，把指针传给curenv的trapframe。
+
+Exercise6
+实现用户创建新进程相关的函数。
+Sys_exofork：通过env_alloc创建新的env，如果失败则返回-NO_FREE_ENV，然后将他的status设置为ENV_NOT_RUNNABLE，register set(trapframe)从当前环境copy，仅进行一些微调（将trapframe中的eax修改为0），使得新的进程的返回值为0。然后该函数向父进程返回新创建的env的id。
+Sys_env_set_status：修改env的状态。首先判断输入的状态是都是runnable或者not runnable，如果status不合法则返回-E_INVAL。然后调用envid2env，用输入的envid获取相应的env，并且把第三个参数设置为1，检查curenv是否具有相应的权限。最后把指定env的status修改后返回0表示成功。
+Sys_page_alloc：为env的虚拟地址映射物理空间。首先检查输入的envid对应的env是否存在，并且是否具有权限访问。然后检查va是否小于UTOP且页对齐。之后见擦汗权限为：PTE_U和PTE_P必须置为1，PTE_AVAIL和PTE_W可选，其余必须置为0.然后申请新的一页进行映射，如果va已经被映射了，则原来映射的那一页会在insert函数中被unmap。如果映射成功就插入到pgdir中，如果失败或者空间不足，就返回错误。
+Sys_page_map：将一个env的page mapping复制到另一个env，他们共享同一块物理地址空间。按照注释，首先按照sys_page_alloc同样的方法检查srcenvid、dstenvid、srcva、dstva、perm，然后在src pgdir中查找srcva对应的页，如果不存在则返回错误。之后检查该页的pte，如果perm将PTE_W置为1，但是pte本身不可写，则返回错误。最后将这一页加入到dst pgdir，如果加入失败则返回错误，成功则返回0；
+Sys_page_unmap：将一个env中的va对应的页unmap。按照同上的方法检查envid和va，然后将va对应的项从env的pgdir中删除。
+由于Sys_page_map需要五个参数，加上trapframe需要六个，因此把a5保存在%esi中push，然后原来保存在%esi中的返回地址通过0x4(%ebp)找到push在栈上，然后pop存入esi。之后修改dispatch处理新添加的五个syscall。在trap_init中SETGATE添加syscall。之后，如果由trap进入kernel调用syscall，会申请两次锁，而通过sysenter进入只申请一次。他们都会调用syscall，因此对于sysenter需要多一层封装，如果是trap调用syscall，则再trap的时候加锁，syscall本身不加锁。如果是从sysenter调syscall，则先调用封装warpper加锁，然后调用syscall。
+之后运行的时候发现会在free env的时候陷入死循环，发现原因是在创建idle env的时候会从free list中取。而原来的实现初始化env的时候没有将留给idle的8个env放入free list，应该加入，之后创建的时候再删除。
+
+
+Exercise7
+实现与exercise6类似，通过输入的envid获取相应的env，同时检查id是否合理，用户是否具有权限。如果错误则返回-E_BAD_ENV，正确则把输入的entry point func赋值给env_pgfault_syscall，使它再出现page fault的时候可以调用正确的函数。
+
+Exercise8
+首先检查当前环境是否存在page fault upcall，如果不存在则输出va之后删除房钱环境。
+之后将utrapframe push到exception stack上。首先判断如果当前的esp已经在exception stack上（即他在UXSTACKTOP和UXSTACKTOP - PGSIZE之间）。如果不在，则在UXSTACKTOP上push。如果已经存在，则不能直接覆盖在UXSTACKTOP的位置，而要在当前的esp之下，同时还需要留下1word大小的空余（scratch space）用来return。之后将当卡环境的trapframe赋值给utf指针，同时保存出现fault的va。最后修改eip和esp，调用runenv使用utf和page fault handler处理page fault。
+
+Exercise9
+通过汇编代码使环境回到产生page fault之前的状态。
+首先获取之前保存的utf中的eip和esp。然后将esp减4，将eip保存在这里（也就是exe8栈顶空出来的部分），将修改后的esp保存回utf。
+然后将esp加8，popal，将保存的utf_regs还原。
+然后将esp加4，popfl，将保存的utf_eflags还原。
+之后pop，取出之前保存的esp，这样会使用产生page fault之前的栈的下一块，esp指向之前保存的eip。
+最后ret，pc返回保存的eip指向的位置，esp因为pop加4，因此同时恢复了esp和eip。
+
+Exercise10
+设置page fault handler function。如果没有pgfault handler，则为他注册一个handler。首先申请一页exception stack，用户具有读写权限。然后调用之前实现的函数，设置env的pgfault upcall为_pgfault_upcall。最后在syscal中实现对应的syscall的dispatch。
+
+Exercise11
+首先实现fork函数。首先需要为parent install pgfault handler。然后调用exofork创建子进程。要还原子进程中的thisenv。之后将父进程的address space（调用duppage）和pgfault handler复制给子进程。注意的是exception stack并不会这样映射，需要手动映射一页可写的页。因为子进程需要进程cow的时候会产生pgfault，需要使用该stack。最后子进程的状态设置为runnable，返回。
+之后实现复制映射的duppage函数。他首先检查被dup的页是不是可写的或者COW的。如果是，则为两个进程的PTE都设置为COW。如果不是，则只将该映射复制到子进程，标记为只读。
+最后实现pgfault()。首先检查产生pgfault的页是不是写操作（检查err中的FEC_WR），以及该页是不是存在，是否被标记为COW。之后alloc一个临时的页（PFTEMP），标记为用户可写。将数据复制到该页上，然后修改addr的映射到该页，最后将临时页释放。
+
+Exercise12
+在trapentry.S中的entrydata加入16个IRQ的数据，然后在sysexit前sti打开中断。
+
+Exercise13
+在trap_dispatch中加入对于时钟中断的处理。如果trap number是IRQ OFFSET + IRQ_TIMER的话，就执行sched yield进行调度。在调度之前，需要调用lapic_eoi通知interrupt。
+
+Exercise14
+实现进程间通信。
+首先实现sys_ipc_recv。首先检查dstva是否小于UTOP但是没有页对齐，如果不是则返回错误。之后将curenv的env_ipc_recving设为1，表示正在等待数据。然后设置env_ipc_dstva，记录等待数据映射的va。之后将状态设置为NOT RUNNABLE挂起，然后yield。
+之后实现sys_ipc_try_send。首先检查srcva是否小于UTOP但是没有页对齐，权限位是否正确，caller对应的va是否映射了物理页，是否物理页是只读的但是输入的权限要求可写，receriver是否有足够的空间储存数据。之后将caller的物理页映射到receiver之前设置好的dstva中，然后修改相关的env数据，使它结束等待，进入runnable模式等待scheduler唤醒。由于要使receiver可以正确返回，因此要把他的trapframe中的eax设置为0。
+如果recv的dstva小于UTOP，且sender的srcva也小于UTOP，则会映射页，否则则不会。
+然后再dispatch中将刚实现的两个系统调用进行dipatch。
+之后实现ipc中的ipc_send。首先如果pg是NULL，表示sender并不传递页，这是可以将它设置为大于等于UTOP的数。之后循环调用sys_ipc_try_send发送信息，如果返回0则发送成功，如果返回-E_IPV_NOT_RECV，则yield一段时间后在发送。如果是其他返回值，则panic。
+然后实现ipc_recv。如果pg为空，表示receiver不需要页，因此将pg设置为UTOP。之后调用sys_ipc_recv等待数据。数据返回后，如果from_env_store非空，则保存sender的envid。如果perm_store非空，则保存sender的page的权限。然后返回传递的value。如果返回错误，则把上述两个指针的值保存为0。
+
+Challenge：
+实现sfork，父子进程共享地址空间。
+首先按照fork的实现方法实现sfork。区别是，由于多个进程共享地址空间，因此thisenv不再有用，设为空。然后将出了USTACK和UXSTACK之外的地址空间全部进行映射复制，仅USTACK进行复制，因为不同的进程需要不同的栈运行。然后按照之前的方式，设置exception stack、page fault handler，之后将子进程状态设置为runnable即可。
+之后通过全局变量SFORK_CHALLENGE区别是否使用sfork，之后在测试代码pingpongs中，将thisenv修改为每次使用当前的envid获取env。
