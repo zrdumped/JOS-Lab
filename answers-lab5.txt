@@ -1,0 +1,43 @@
+﻿Lab5
+Exercise1
+在create env的时候检查env的type，如果是FS，就把他的eflags中的IOPL置为1，表示拥有I/O权限。不需要做任何其他的事情保证权限的设置和保存，因为权限是保存在trapframe中的，进程之间切换的时候会保存并切换trapframe等进程信息，因此他是附属于某一个进程的。
+
+Exercise2
+实现demand paging。
+Bc_pgdefault()：首先调用sys_page_alloc，在disk map region中分配一页，调用ide_read从disk上读取相应数据（BLKSECTS个sector）。由于disk大小和memory中的disk map region是一样大的，因此一对一映射。然后由于地址可能没有对齐，进行ROUNDDOWN。需要把页设置为not-dirty，在sys_page_alloc的时候就已经完成。
+之所以先分配页再检查是否free，是因为bitmap也是通过这个方法从disk读进memory中的，在获取bitmap前检查其中的数据会出错。
+Flush_block()：首先检查要flush的页是否有映射，以及是否dirty。不是的话直接返回。是的话调用ide_write写入磁盘，然后调用sys_page_map，从自己映射到自己，用来把dirty bit置回0。
+
+Exercise3
+实现alloc_block()，遍历所有的block，如果有free，就把他在bitmap中的bit置为0（参照了free_block的操作bitmap的方法）。然后需要立即flush bitmap。之后返回对应的block num，如果不存在free的则返回-E_NO_DISK。
+
+Exercise4
+实现一些fs的辅助功能。
+File_block_walk()：首先检查fileno有没有越界。然后如果在direct的部分，则直接把ppdiskbno的指针指向对应的block。如果实在indirect的部分，首先检查当前文件有没有indirect，如果没有则需要创建。如果需要创建但是alloc为0的话，则返回错误，否则之后新创建一个block，全部置零，然后把他赋给file的indirect。然后把indirect指向的block中第blockno-NDIERECT的指针赋给ppdoskbno后返回0。
+File_get_block()：根据输入的filebno返回相应的block。首先检查filebno是否越界。然后将filebno在文件中对应的disk block number。如果尚未映射，则新映射一个block，然后把这个block的指针存储返回。
+
+Exercise5
+Server_read()实现了read的RPC接口。首先通过ipc的数据，找到对应的文件并打开。然后从文件中fd中记录的cursor位置开始，读取要求的n个byte（如果n超过buffer的大小则只读满一个buffer），将他保存在返回的buffer中。然后更新cursor的位置。
+Devfile_read()：将参数打包，调用server并处理返回值。首先将read需要的参数（文件id，读取byte数目）写入fsipbuf.read，然后调用fsipc，将指令设置为FSREQ_READ，将返回的buffer中的数据复制到buf中，然后返回。
+在这里发现了一个lab4中的权限位检查的错误，但是由于lab4中没有需要通过page进行ipc的测试，因此没有发现。
+
+Exercise6
+实现server_write()，与server_read()相同，只是将file_read改为调用write。
+Devfile_write()与read相似，首先设置要写的文件以及buffer大小（buffer大小不能超过fsipcbuf中的buf的大小），然后将要写入的数据写入ipc request，调用ipc write，然后返回。
+
+Exercise7
+实现打开文件。首先创建一个fd，检查当前文件能否继续打开fd，以及path是否太长。然后将open需要的参数（文件路径、打开方式）打包，调用ipc，打开文件。如果打开失败则释放fd，否则返回新开的fd对应的数字。
+
+Exercise8
+实现用户态下的“exec”。首先获得envid，如果不存在或无权限则返回错误。然后修改他的trapframe，并将cs设置为3保证在CPL3下运行。然后打开中断。最后在dispatch中加入相应的系统调用。
+
+Challenge
+实现了exec。Exec和spawn的区别是，spawn产生一个新的env，加载program image然后运行。Exec在同一个env下修改program image。
+实现方法是，exec首先创建一个新的env，加载对应的spawn。然后不是将新的env运行，而是把新的env的页表和trapframe与旧的env交换，然后destroy调新的env。
+实现方法首先在spawn.c中，将spawn，spawnl两个函数改写为exec，execl两个函数，用于创建新的env并且加载program image。其中execl调用exec，exec中不是调用sys_env_set_status，而是调用一个新的系统调用，sys_env_exec_new_env，交换两个env的pgdir和trapframe，然后destroy新的env。
+然后加入新的system call，除了修改enum和dispatch之外，实现了新的函数sys_env_exec_new_env。它获取到新的env，然后把当前env的pgdir和trapframe与之交换。之所以交换是因为，如果直接复制的话destroy新的env会影响到curenv。
+最后进行测试，直接修改了原来的user/spawninit和user/spawnhello，先进行fork，然后子进程调用exec。修改之后make grade与原来结果相同。
+之所以exec比spawn更复杂是因为，exec需要destroy一个进程，而该操作不能再用户态下完成。
+
+Question1：
+大约12小时。
