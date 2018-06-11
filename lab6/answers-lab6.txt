@@ -1,0 +1,98 @@
+﻿Lab6
+Question1:
+Transmit的实现如exe6：
+接受一段数据和数据的长度，检查参数之后，获取tail。如果tail的dd设置为0，说明当前queue满，返回错误，之后对应的env会等待后重新发送。如果未满，将数据复制到当前的tail，在descriptor中记录长度，并将RS设置为1，这样当数据发送后会把DD设置为1。由于所有数据都小于一个包的大小，因此每次发送都将对应的EOP设置为1（end of packet）。最后把DD标记位0表示有数据，最后更新tail（环形queue），之后返回0。
+对于ring满的情况的处理为：
+首先获取tail中的DD位，如果是0说明ring满，然后返回-E_TX_FULL（新加入的error code）。然后调用syscall transmit的output helper得到返回值进行判断，发现是-E_TX_FULL，会yield，之后重发。在output helper yield这段时间，如果有新的包发送，network server则会在ipc send时block，直到有新的空位。
+
+Question2:
+receive的实现如exe11。
+首先检查参数。然后取RD tail的后一个（因为初始化的时候tail是最后一个可用的之后一个），如果他的status中，DD是0（表示未使用，说明queue为空），或EOP是0（表示数据长度超出最大ethernet packet），返回错误。如果头尾重合，则等待数据。否则将该descriptor对应的数据，按照记录的长度取出来，并将DD和EOP置回0，返回收到的长度。
+如果receive queue为空，而user请求最新的数据的处理为：
+在user->network server->input helper->sys e1000 receibe后，会出现tail的下一个descriptor的STAT_DD为0，表示队列为空，然后receive返回为空的报错（-E_RX_EMPTY），input helper在收到empty之后，回yield，一段时间后重新获取。
+
+Question3：
+首先make which-ports，发现web server需要访问26002端口。
+运行make run-httpd打开server。
+打开浏览器，输入http://localhost:26002/index.html，可以看到一个网页，源码为：
+<html>
+<head>
+	<title>jhttpd on JOS</title>
+</head>
+<body>
+	<center>
+		<h2>This file came from JOS.</h2>
+		<blink>Cheesy web page!</blink>
+	</center>
+</body>
+</html>
+
+Question4
+大约12小时。
+
+Challenge：
+实现了加载e1000的mac 地址而不是硬编码。
+首先在e1000.c中实现读取e1000的mac地址。根据文档5.3.1，首先将地址（需要使用E1000_EEPROM_RW_ADDR_SHIFT偏移）和E1000_EEPROM_RW_REG_START写入EERD。然后等待EERD中的E1000_EEPROM_RW_REG_DONE设置为1，将其中的数据读出来（offset根据E1000_EEPROM_RW_REG_DATA为后16位）。用新建的全局变量保存获得的mac地址，并将其cprintf。
+然后在attach的时候，调用该函数获取数据。由于每次只能返回16位，因此需要调用三次获得完整的mac地址。
+实现一个新的系统调用sys_e1000_mac，获得e1000在attach的时候获得的mac地址。
+然后在net/lwip/jos/jif/jif.c中，把硬编码获取的mac地址改为调用新的syscall获得。
+最后运行make qemu，可以看到输出的mac地址不变。
+这里遇到一个bug，如果直接将数据从e1000中取出然后进行位运算，会出现错误结果，必须用一个volatile的中间变量储存结果再进行位运算才可以，但是并不知道是什么原理。也尝试了再testinput中修改预置的mac地址，系统仍然能够正常工作。
+
+Exercise1
+在IRQ为Timer的时候加入调用time_tick，将时钟中断修改的时间记录。然后加入新的syscall sys_time_msec获取累积的时间。
+
+Exercise3
+首先查看文档的5.2，找到82540EM对应的device ID和vendor ID，而且这里需要使用desktop对应的ID。然后在E1000.c中实现对应的attach函数，目前只调用了enable。然后将两个ID和对应的attach函数指针作为vendor加入pci attach vendor array中{0，0，0}的前面。
+
+Exercise4
+首先为E1000 BAR 映射一段虚拟内存，然后由于是device memory而不是DRAM，因此需要标记为PTE_PCD（cache-disabled）和PTE_PWT（write-through）。这里需要将boot map region修改为全局的函数。
+然后使用一个指针存储这段内存的起始地址，为了防止cache和reorder，需要将该指针标记位volatile。
+被映射的地址由enable的时候储存在了reg_base[0]和reg_size[0]中。这里使用了KSTACKTOP和KERNBASE之间的gap。
+最后输出status register进行检查。从文档中看到，该寄存器开始于byte 8。因此从映射的空间的byte 8访问e1000，就可以得到status register，为80080783。
+
+Exercise5
+首先按照官方文档，在e1000_hw.h中找到对应的寄存器、寄存器中bit的含义、transmit descriptor的结构等导入到项目中。
+然后按照文档的叙述进行实现。
+首先map一段地址空间用于存放tx descriptor（一个环形的queue）。 Transmit Descriptor Base Address(TDBAL/TDBAH) register(s) 中储存这块区域的地址。由于是32位的地址，因此TDBAL中储存地址，TDBAH中储存0。
+TDLEN设置为tx queue的大小（in byte），这里设置的是64个descriptor。
+手动设置 Transmit Descriptor Head and Tail (TDH/TDT) ，确保他们是0。
+初始化TCTL。其中EN、PSP为1，CT为10h，COLD假设为full-duplex operation，设置为40h。
+最后TIPG设置为标准的值。
+
+Exercise6
+实现transmit，接受一段数据和数据的长度，检查参数之后，获取tail。如果tail的dd设置为0，说明当前queue满，返回错误，之后对应的env会等待后重新发送。如果未满，将数据复制到当前的tail，在descriptor中记录长度，并将RS设置为1，这样当数据发送后会把DD设置为1。由于所有数据都小于一个包的大小，因此每次发送都将对应的EOP设置为1（end of packet）。最后把DD标记位0表示有数据，最后更新tail（环形queue），之后返回0。
+根据tx desc的结构，E1000_TXD_CMD对应的是lower.cmd，E1000_TXD_STAT对应的是upper.status。
+
+Exercise7
+添加系统调用，需要修改的文件包括:
+kern/syscall.c：需要检查curenv是否具有权限发送对应地址的内容。
+inc/syscall.h
+inc/lib.h
+lib/syscall.c
+
+Exercise8：
+实现output helper。他从network server中读取数据，如果是NSREQ_OUTPUT，就把数据（packet，包括data和len）传给e1000 driver transmit。如果发现queue已满，则yield，一段时间后重发。
+
+截止到目前，发送包的流程为：
+User env 
+--ipc(lib/nsipc.c or lib/sockets.c)--> nerwork server 
+--ipc(NSREQ_OUTPUT)--> output helper 
+--ipc(nsipcbuf.pkt)--> e1000 driver  
+--syscall transmit--> e1000
+
+Exercise10：
+实现receive。
+首先attach中初始化receive的部分。同样使用了rx desc queue（ring）和rx pocket buffer储存包。然后设置MAC地址，这里将硬编码的MAC地址（52：54：00：12：34：56）以64位little endian储存在RA中，并且将RAH_AV置为1。然后将MTA初始化为0。设置RDBA，低位为queue的32位地址，高位为0。RDLEN设置为queue的大小。RD Header指向第一个可用的descriptor（如0），RD tail指向最后一个可用的descriptor之外（如queue最后一个）。最后设置RTCL，这里设置了EN（可用）、BAM（接受广播包）、SECRC（strip CRC），rx buffer size设置为2048，LPE设置为0表示不接受大于最大包的数据，其余都是0，不做设置。
+
+Exercise11:
+实现e1000 receive函数。首先检查参数。然后取RD tail的后一个（因为初始化的时候tail是最后一个可用的之后一个），如果他的status中，DD是0（表示未使用，说明queue为空），或EOP是0（表示数据长度超出最大ethernet packet），返回错误。如果头尾重合，则等待数据。否则将该descriptor对应的数据，按照记录的长度取出来，并将DD和EOP置回0，返回收到的长度。
+最后将syscall receive实现，并添加到syscall中。
+
+Exercise12：
+实现input helper。首先调用sys e1000 receive获取queue中的数据，如果没有数据则yield之后一段时间再尝试。有数据后，为nsipcbuf分配一块空余内存（需要放置分配的内存中的数据还未使用完），将e1000中的数据写入，然后通过ipc（NSREQ_INPUT）发送回network server。
+
+Exercise13：
+首先实现send file。根据注释，打开req中的url对应的文件，检查文件是否存在、是否是目录，然后将文件的size赋值给file size，之后的检查已经完成，然后调用send data。
+由于只实现了单个packet的发送，因此，只从fd中读取最多为packet max size（1518）大小的数据，然后将读取到的数据（使用read的返回值表示读到的数据，小于等于1518）写入socket，完成exe13.
+
